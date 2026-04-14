@@ -81,28 +81,36 @@ def mandatory_bulkheads(propulsion):
     return items
 
 
-def deck_extension_logic(second_deck, draught_cond, quarter_deck):
+def deck_extension_logic(second_deck, draught_cond, quarter_deck, ship_type, freeboard_to_ap):
     notes = []
 
     # Rule 1.1.5 (default)
     notes.append("All watertight bulkheads shall extend to the bulkhead deck.")
 
-    # Rule 1.1.6 (exception)
+    # Rule 1.1.6
     if second_deck == "Yes" and draught_cond == "Yes":
-        notes.append(
-            "Bulkheads (except collision bulkhead) may terminate at the second deck."
-        )
-        notes.append(
-            "Engine casing between second and bulkhead deck must be watertight."
-        )
-        notes.append(
-            "Second deck must be watertight outside engine casing."
-        )
+        notes.append("Bulkheads (except collision bulkhead) may terminate at the second deck.")
+        notes.append("Engine casing between second and bulkhead deck must be watertight.")
+        notes.append("Second deck must be watertight outside engine casing.")
 
-    # Rule 1.1.7 (quarter deck)
+    # Rule 1.1.7 - General
     if quarter_deck == "Yes":
+        notes.append("Bulkheads within quarter deck region must extend to the quarter deck.")
+
+    # Rule 1.1.7 - Special cargo ship case
+    if (
+        ship_type == "Cargo Ship"
+        and quarter_deck == "Yes"
+        and freeboard_to_ap == "No"
+    ):
         notes.append(
-            "Bulkheads within quarter deck region must extend to the quarter deck."
+            "Aft peak bulkhead may terminate below freeboard deck at a watertight deck."
+        )
+        notes.append(
+            "Rudder stock bearings must be enclosed in a watertight compartment."
+        )
+        notes.append(
+            "No open connection allowed to spaces forward of aft peak bulkhead."
         )
 
     return notes
@@ -167,6 +175,81 @@ if st.button("🚀 Calculate Bulkhead Arrangement"):
     - Includes deck termination and extension conditions
     - For preliminary design only
     """)
+st.sidebar.subheader("🌊 Bow Height Parameters")
+
+LLL = st.sidebar.number_input("Freeboard Length LLL (m)", value=120.0)
+TLL = st.sidebar.number_input("Load Line Draught TLL (m)", value=8.0)
+B = st.sidebar.number_input("Breadth B (m)", value=20.0)
+disp_volume = st.sidebar.number_input("Displacement Volume ∇ (m³)", value=15000.0)
+Awf = st.sidebar.number_input("Forward Waterplane Area Awf (m²)", value=800.0)
+
+def calculate_cb(disp_volume, LLL, B, TLL):
+    return disp_volume / (LLL * B * TLL)
+
+
+def calculate_cwf(Awf, LLL, B):
+    return Awf / (0.5 * LLL * B)
+
+
+def calculate_bow_height(LLL, TLL, CB, Cwf):
+    x = LLL / 100
+
+    Fb = (
+        (6075 * x - 1875 * x**2 + 200 * x**3)
+        * (2.08 + 0.609 * CB - 1.603 * Cwf - 0.0129 * (LLL / TLL))
+    )
+
+    return Fb  # in mm
+
+def calculate_cb(disp_volume, LLL, B, TLL):
+    return disp_volume / (LLL * B * TLL)
+
+
+def calculate_cwf(Awf, LLL, B):
+    return Awf / (0.5 * LLL * B)
+
+
+def calculate_bow_height(LLL, TLL, CB, Cwf):
+    x = LLL / 100
+
+    Fb = (
+        (6075 * x - 1875 * x**2 + 200 * x**3)
+        * (2.08 + 0.609 * CB - 1.603 * Cwf - 0.0129 * (LLL / TLL))
+    )
+
+    return Fb  # in mm
+st.divider()
+st.subheader("🌊 Minimum Bow Height Calculation")
+
+# Calculate coefficients
+CB = calculate_cb(disp_volume, LLL, B, TLL)
+Cwf = calculate_cwf(Awf, LLL, B)
+Fb = calculate_bow_height(LLL, TLL, CB, Cwf)
+
+# Display results
+col1, col2, col3 = st.columns(3)
+col1.metric("Block Coefficient CB", f"{CB:.3f}")
+col2.metric("Waterplane Coefficient Cwf", f"{Cwf:.3f}")
+col3.metric("Minimum Bow Height Fb (mm)", f"{Fb:.1f}")
+
+st.divider()
+
+st.subheader("📘 Bow Height Design Requirements")
+
+st.info("""
+1) Bow height must satisfy minimum Fb requirement.
+
+2) If achieved by sheer:
+- Sheer must extend at least 15% of LLL from FP.
+
+3) If achieved by superstructure:
+- Must extend at least 0.07 LLL aft of FP
+- Must be enclosed
+
+4) Special consideration may apply for operational constraints.
+
+5) Additional reserve buoyancy required for Type B ships (Load Line rules).
+""")
 
 # -----------------------------
 # Footer
