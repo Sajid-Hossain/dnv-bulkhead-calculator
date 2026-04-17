@@ -1,24 +1,21 @@
-import streamlit as st
-import math
-from dataclasses import dataclass, field
-from typing import Optional
-import pandas as pd
+from __future__ import annotations
 
-# -----------------------------
-# PAGE CONFIG
-# -----------------------------
+from dataclasses import dataclass
+
+import pandas as pd
+import streamlit as st
+
+
 st.set_page_config(
     page_title="DNV Ship Design Tool",
     layout="wide",
     initial_sidebar_state="expanded",
-    menu_items={"About": "DNV-based ship design and compliance tool (advanced prototype)"}
+    menu_items={"About": "DNV-based ship design and compliance tool (advanced prototype)"},
 )
 
-# -----------------------------
-# CONSTANTS
-# -----------------------------
-TRES = 0.5  # Residual corrosion addition (mm)
 
+TRES = 0.5
+YES_NO = ("Yes", "No")
 COMPARTMENT_OPTIONS = [
     "Cargo oil / liquid chemicals tank",
     "Dry cargo hold - lower part",
@@ -33,28 +30,28 @@ COMPARTMENT_OPTIONS = [
     "Void / dry space - elsewhere",
     "Stainless steel / aluminium independent of compartment",
 ]
+SERVICE_RESTRICTIONS = ["Unrestricted", "R2", "R3", "R4", "RE"]
+ENGINE_ROOM_LOCATIONS = ["Aft", "Amidships", "Forward / other"]
 
 TC_TABLE: dict[str, float] = {
-    "Cargo oil / liquid chemicals tank":                          1.0,
-    "Dry cargo hold - lower part (standard)":                    1.0,
-    "Dry cargo hold - lower part (Grab 3-X)":                    2.5,
-    "Dry cargo hold - other members":                            0.5,
-    "External surface":                                          0.5,
-    "Ballast / sea water tank":                                  1.0,
-    "Potable water / fuel oil / lube oil tank":                  0.0,
+    "Cargo oil / liquid chemicals tank": 1.0,
+    "Dry cargo hold - lower part (standard)": 1.0,
+    "Dry cargo hold - lower part (Grab 3-X)": 2.5,
+    "Dry cargo hold - other members": 0.5,
+    "External surface": 0.5,
+    "Ballast / sea water tank": 1.0,
+    "Potable water / fuel oil / lube oil tank": 0.0,
     "Brine / urea / bilge water / drain storage / chain locker tank": 1.0,
-    "Other tank":                                                0.5,
-    "Accommodation space":                                       0.0,
-    "Void / dry space - upper deck or bottom plate":             0.5,
-    "Void / dry space - elsewhere":                              0.0,
-    "Stainless steel / aluminium independent of compartment":    0.0,
+    "Other tank": 0.5,
+    "Accommodation space": 0.0,
+    "Void / dry space - upper deck or bottom plate": 0.5,
+    "Void / dry space - elsewhere": 0.0,
+    "Stainless steel / aluminium independent of compartment": 0.0,
 }
 
-# -----------------------------
-# DATA CLASSES
-# -----------------------------
+
 @dataclass
-class ShipInputs:
+class ArrangementInputs:
     L: float
     propulsion: str
     damage_stability: str
@@ -63,15 +60,22 @@ class ShipInputs:
     quarter_deck: str
     ship_type: str
     freeboard_to_ap: str
+    engine_room_location: str
+    service_restriction: str
+    aft_space_usage: str
+    double_bottom_fitted: str
+    fuel_next_to_fw: str
+
 
 @dataclass
 class BowInputs:
     LLL: float
     TLL: float
     B: float
-    disp: float
+    displacement: float
     Awf: float
-    actual_Fb: float
+    actual_fb: float
+
 
 @dataclass
 class CollisionInputs:
@@ -80,6 +84,7 @@ class CollisionInputs:
     openings_below_freeboard: str
     num_pipes: int
     long_superstructure: str
+
 
 @dataclass
 class CorrosionInputs:
@@ -93,6 +98,7 @@ class CorrosionInputs:
     t_as_built: float
     t_vol_add: float
 
+
 @dataclass
 class ProtectionInputs:
     corrosive_tank_or_hold: str
@@ -102,16 +108,15 @@ class ProtectionInputs:
     narrow_space: str
     efficient_protection_product: str
 
+
 @dataclass
 class StructuralInputs:
-    # Section 5
     structural_continuity_ok: str
     longitudinal_stiffeners_aligned: str
     transverse_stiffeners_supported: str
     sheer_strake_continuity: str
     stringer_plate_continuity: str
     deckhouse_connection_good: str
-    # Section 6
     tripping_brackets_fitted: str
     face_plate_width: float
     free_flange_outstand: float
@@ -120,7 +125,6 @@ class StructuralInputs:
     openings_in_stiffeners_ok: str
     openings_in_psm_ok: str
     openings_in_shell_deck_ok: str
-    # Section 7
     effective_span: float
     stiffener_spacing: float
     attached_plate_b1: float
@@ -131,711 +135,1010 @@ class StructuralInputs:
     bf: float
     tp: float
 
-# -----------------------------
-# CALCULATION FUNCTIONS
-# -----------------------------
 
-# --- Bulkheads ---
-def min_bulkheads(L: float) -> Optional[dict]:
+@dataclass
+class AppInputs:
+    arrangement: ArrangementInputs
+    bow: BowInputs
+    collision: CollisionInputs
+    corrosion: CorrosionInputs
+    protection: ProtectionInputs
+    structural: StructuralInputs
+
+
+@dataclass
+class BulkheadScreening:
+    applicable: bool
+    special_consideration: bool
+    min_aft_region: int | None
+    min_elsewhere: int | None
+    note: str
+
+
+@dataclass
+class BowHeightResult:
+    cb: float
+    cwf: float
+    required_fb: float
+    actual_fb: float
+    margin: float
+    compliant: bool
+
+
+@dataclass
+class CollisionResult:
+    xf: float
+    xc_min: float
+    xc_max: float
+    openings_ok: bool
+    pipes_ok: bool
+    single_pipe_requires_valve: bool
+    superstructure_extension_required: bool
+
+
+@dataclass
+class CorrosionResult:
+    tc1: float
+    tc2: float
+    tc_total: float
+    detail: str
+    gross_required: float
+    gross_offered: float
+    net_offered: float
+    gross_margin: float
+    net_margin: float
+    gross_ok: bool
+    net_ok: bool
+
+
+@dataclass
+class DetailDesignResult:
+    bracket_arm_min: float
+    bracket_arm_ok: bool
+    face_plate_brackets_required: bool
+    free_flange_support_required: bool
+
+
+@dataclass
+class IdealizationResult:
+    beff_mm: float
+    a_stiffener_mm2: float
+    a_web_mm2: float
+    a_flange_mm2: float
+    a_plate_mm2: float
+    a_total_mm2: float
+    y_na_mm: float
+    i_total_mm4: float
+    z_top_mm3: float
+    z_bot_mm3: float
+
+
+@dataclass
+class AppResults:
+    bulkheads: BulkheadScreening
+    bow: BowHeightResult
+    collision: CollisionResult
+    corrosion: CorrosionResult
+    detail: DetailDesignResult
+    idealization: IdealizationResult
+    double_bottom_height_mm: float
+
+
+def yes_no_index(default: str) -> int:
+    return 0 if default == "Yes" else 1
+
+
+def yes_no_radio(label: str, default: str = "No") -> str:
+    return st.radio(label, YES_NO, index=yes_no_index(default), horizontal=True)
+
+
+def render_messages(messages: list[tuple[str, str]]) -> None:
+    for level, message in messages:
+        if level == "success":
+            st.success(message)
+        elif level == "warning":
+            st.warning(message)
+        elif level == "error":
+            st.error(message)
+        else:
+            st.info(message)
+
+
+def min_bulkheads_lookup(length_m: float) -> tuple[int, int] | None:
     thresholds = [
-        (65,  3, 4),
-        (85,  4, 4),
-        (105, 4, 5),
-        (125, 5, 6),
-        (145, 6, 7),
-        (165, 7, 8),
-        (190, 8, 9),
-        (225, 9, 10),
+        (65.0, 3, 4),
+        (85.0, 4, 4),
+        (105.0, 4, 5),
+        (125.0, 5, 6),
+        (145.0, 6, 7),
+        (165.0, 7, 8),
+        (190.0, 8, 9),
+        (225.0, 9, 10),
     ]
-    for threshold, aft, elsewhere in thresholds:
-        if L <= threshold:
-            return {"aft": aft, "elsewhere": elsewhere}
+    for threshold, aft_region, elsewhere in thresholds:
+        if length_m <= threshold:
+            return aft_region, elsewhere
     return None
 
 
-# --- Bow Height ---
-def calculate_cb(LLL: float, B: float, TLL: float, disp: float) -> float:
-    denom = LLL * B * TLL
-    return disp / denom if denom > 0 else 0.0
+def calculate_cb(length_m: float, breadth_m: float, draught_m: float, displacement_m3: float) -> float:
+    denominator = length_m * breadth_m * draught_m
+    return displacement_m3 / denominator if denominator > 0 else 0.0
 
 
-def calculate_cwf(LLL: float, B: float, Awf: float) -> float:
-    denom = 0.5 * LLL * B
-    return Awf / denom if denom > 0 else 0.0
+def calculate_cwf(length_m: float, breadth_m: float, awf_m2: float) -> float:
+    denominator = 0.5 * length_m * breadth_m
+    return awf_m2 / denominator if denominator > 0 else 0.0
 
 
-def calculate_fb(LLL: float, TLL: float, CB: float, Cwf: float) -> float:
-    if TLL <= 0:
+def calculate_fb(length_m: float, draught_m: float, cb: float, cwf: float) -> float:
+    if draught_m <= 0:
         return 0.0
-    x = LLL / 100
+    scaled_length = length_m / 100.0
     return (
-        (6075 * x - 1875 * x**2 + 200 * x**3)
-        * (2.08 + 0.609 * CB - 1.603 * Cwf - 0.0129 * (LLL / TLL))
+        (6075.0 * scaled_length - 1875.0 * scaled_length**2 + 200.0 * scaled_length**3)
+        * (2.08 + 0.609 * cb - 1.603 * cwf - 0.0129 * (length_m / draught_m))
     )
 
 
-# --- Collision Bulkhead ---
-def calculate_xf(bulbous_bow: str, xbe: float, LLL: float) -> float:
+def calculate_xf(bulbous_bow: str, xbe_m: float, length_m: float) -> float:
     if bulbous_bow == "No":
         return 0.0
-    return min(0.5 * xbe, 0.015 * LLL, 3.0)
+    return min(0.5 * xbe_m, 0.015 * length_m, 3.0)
 
 
-def collision_limits(LLL: float, xf: float) -> tuple[float, float]:
-    xc_min = (0.05 * LLL if LLL < 200 else 10.0) - xf
-    xc_max = (0.05 * LLL + 3 if LLL < 100 else 0.08 * LLL) - xf
+def collision_limits(length_m: float, xf_m: float) -> tuple[float, float]:
+    xc_min = (0.05 * length_m if length_m < 200.0 else 10.0) - xf_m
+    xc_max = (0.05 * length_m + 3.0 if length_m < 100.0 else 0.08 * length_m) - xf_m
     return xc_min, xc_max
 
 
-# --- Double Bottom ---
-def double_bottom_height(B: float) -> float:
-    h = 1000 * B / 20
-    return min(max(h, 760), 2000)
+def double_bottom_height(breadth_m: float) -> float:
+    height_mm = 1000.0 * breadth_m / 20.0
+    return min(max(height_mm, 760.0), 2000.0)
 
 
-# --- Corrosion Additions ---
-def tc_one_side(compartment_name: str, grab_3x_flag: bool) -> float:
+def tc_one_side(compartment_name: str, grab_3x: bool) -> float:
     if compartment_name == "Dry cargo hold - lower part":
-        key = "Dry cargo hold - lower part (Grab 3-X)" if grab_3x_flag else "Dry cargo hold - lower part (standard)"
+        key = "Dry cargo hold - lower part (Grab 3-X)" if grab_3x else "Dry cargo hold - lower part (standard)"
     else:
         key = compartment_name
     return TC_TABLE.get(key, 0.0)
 
 
-def total_corrosion_addition(
-    material: str,
-    member_type: str,
-    comp1: str,
-    comp2: str,
-    grab_flag: bool,
-    tc_cap: float
-) -> tuple[float, float, float, str]:
+def total_corrosion_addition(inputs: CorrosionInputs) -> tuple[float, float, float, str]:
+    tc1 = tc_one_side(inputs.compartment_1, inputs.grab_3x)
+    tc2 = tc_one_side(inputs.compartment_2, inputs.grab_3x)
 
-    tc1 = tc_one_side(comp1, grab_flag)
-    tc2 = tc_one_side(comp2, grab_flag)
-
-    if material in ["Stainless steel", "Aluminium"]:
-        tc = TRES
-        detail = "tc = t_res (stainless/aluminium)"
-    elif material == "Stainless clad steel":
-        tc = tc1 + TRES
-        detail = "tc = tc1 + t_res (clad steel)"
+    if inputs.material_family in {"Stainless steel", "Aluminium"}:
+        tc_total = TRES
+        detail = "tc = t_res (stainless steel / aluminium)"
+    elif inputs.material_family == "Stainless clad steel":
+        tc_total = tc1 + TRES
+        detail = "tc = tc1 + t_res (stainless clad steel)"
     else:
-        # Carbon-manganese steel
-        if member_type in ["Internal member", "Stiffener"]:
-            tc = 2.0 * tc1 + TRES
-            detail = "tc = 2·tc1 + t_res (internal/stiffener)"
+        if inputs.member_kind in {"Internal member", "Stiffener"}:
+            tc_total = 2.0 * tc1 + TRES
+            detail = "tc = 2*tc1 + t_res (internal member / stiffener)"
         else:
-            tc = tc1 + tc2 + TRES
-            detail = "tc = tc1 + tc2 + t_res (boundary)"
+            tc_total = tc1 + tc2 + TRES
+            detail = "tc = tc1 + tc2 + t_res (compartment boundary)"
 
-    if tc_cap > 0:
-        if tc > tc_cap:
-            detail += f" → capped at {tc_cap:.2f} mm"
-            tc = tc_cap
+    if inputs.tc_max_override_mm > 0 and tc_total > inputs.tc_max_override_mm:
+        detail += f" -> capped at {inputs.tc_max_override_mm:.2f} mm"
+        tc_total = inputs.tc_max_override_mm
 
-    return tc1, tc2, tc, detail
-
-
-def round_to_nearest_half(x: float) -> float:
-    return round(x * 2) / 2.0
+    return tc1, tc2, tc_total, detail
 
 
-# --- Corrosion Protection ---
-def corrosion_protection_messages(p: ProtectionInputs) -> list[tuple[str, str]]:
-    msgs = []
+def round_to_nearest_half(value: float) -> float:
+    return round(value * 2.0) / 2.0
+
+
+def corrosion_protection_messages(inputs: ProtectionInputs) -> list[tuple[str, str]]:
+    messages: list[tuple[str, str]] = []
 
     checks = [
         (
-            p.corrosive_tank_or_hold == "Yes",
-            p.efficient_protection_product == "Yes",
-            "Corrosive tank/hold — efficient corrosion prevention system provided.",
+            inputs.corrosive_tank_or_hold == "Yes",
+            inputs.efficient_protection_product == "Yes",
+            "Corrosive tank/hold: efficient corrosion prevention system indicated.",
             "Corrosive tank/hold requires an efficient corrosion prevention system.",
+            "error",
         ),
         (
-            p.pspc_vessel == "Yes" and p.dedicated_seawater_ballast == "Yes",
-            p.efficient_protection_product == "Yes",
-            "Dedicated seawater ballast tank protected under PSPC.",
+            inputs.pspc_vessel == "Yes" and inputs.dedicated_seawater_ballast == "Yes",
+            inputs.efficient_protection_product == "Yes",
+            "Dedicated seawater ballast tank: protection indicated for PSPC scope.",
             "Dedicated seawater ballast tank requires PSPC-compliant protection.",
+            "error",
         ),
         (
-            p.pspc_vessel == "Yes" and p.crude_oil_cargo_tank == "Yes",
-            p.efficient_protection_product == "Yes",
-            "Crude-oil cargo tank corrosion prevention indicated.",
-            "Crude-oil cargo tank requires efficient corrosion prevention under applicable PSPC regime.",
+            inputs.pspc_vessel == "Yes" and inputs.crude_oil_cargo_tank == "Yes",
+            inputs.efficient_protection_product == "Yes",
+            "Crude oil cargo tank: corrosion prevention indicated.",
+            "Crude oil cargo tank requires efficient corrosion prevention under the applicable PSPC regime.",
+            "error",
         ),
         (
-            p.narrow_space == "Yes",
-            p.efficient_protection_product == "Yes",
-            "Narrow space protection indicated.",
+            inputs.narrow_space == "Yes",
+            inputs.efficient_protection_product == "Yes",
+            "Narrow space: protection indicated.",
             "Narrow spaces should generally be protected by an efficient protective product.",
+            "warning",
         ),
     ]
 
-    for condition, passing, ok_msg, fail_msg in checks:
+    for condition, is_ok, ok_message, fail_message, fail_level in checks:
         if condition:
-            msgs.append(("success" if passing else ("error" if "requires" in fail_msg else "warning"), ok_msg if passing else fail_msg))
+            messages.append(("success", ok_message) if is_ok else (fail_level, fail_message))
 
-    if not msgs:
-        msgs.append(("info", "No specific corrosion protection triggers selected."))
+    if not messages:
+        messages.append(("info", "No specific corrosion protection triggers were selected."))
 
-    return msgs
+    return messages
 
 
-# --- Section 5: Structural Arrangement ---
-def section5_messages(s: StructuralInputs) -> list[tuple[str, str]]:
+def section5_messages(inputs: StructuralInputs) -> list[tuple[str, str]]:
     checks = [
-        (s.structural_continuity_ok,        "error",   "Structural continuity indicated.",             "Structural continuity insufficient — review required."),
-        (s.longitudinal_stiffeners_aligned,  "warning", "Longitudinal stiffeners continuous/aligned.",  "Longitudinal stiffener discontinuity — review required."),
-        (s.transverse_stiffeners_supported,  "warning", "Transverse stiffeners properly supported.",    "Transverse stiffener support — review required."),
-        (s.sheer_strake_continuity,          "warning", "Sheer strake continuity satisfactory.",        "Sheer strake continuity requires attention."),
-        (s.stringer_plate_continuity,        "warning", "Stringer plate continuity satisfactory.",      "Stringer plate continuity requires attention."),
-        (s.deckhouse_connection_good,        "warning", "Deckhouse/superstructure connection satisfactory.", "Deckhouse/superstructure connection — review for stress concentration."),
+        (
+            inputs.structural_continuity_ok,
+            "Structural continuity indicated.",
+            "Structural continuity is not satisfactory; review required.",
+            "error",
+        ),
+        (
+            inputs.longitudinal_stiffeners_aligned,
+            "Longitudinal stiffeners are continuous/aligned.",
+            "Longitudinal stiffener discontinuity requires review.",
+            "warning",
+        ),
+        (
+            inputs.transverse_stiffeners_supported,
+            "Transverse stiffeners are properly supported.",
+            "Transverse stiffener support requires review.",
+            "warning",
+        ),
+        (
+            inputs.sheer_strake_continuity,
+            "Sheer strake continuity is satisfactory.",
+            "Sheer strake continuity requires attention.",
+            "warning",
+        ),
+        (
+            inputs.stringer_plate_continuity,
+            "Stringer plate continuity is satisfactory.",
+            "Stringer plate continuity requires attention.",
+            "warning",
+        ),
+        (
+            inputs.deckhouse_connection_good,
+            "Deckhouse/superstructure connection is satisfactory.",
+            "Deckhouse/superstructure connection should be reviewed for stress concentration.",
+            "warning",
+        ),
     ]
-    return [("success" if val == "Yes" else sev, ok if val == "Yes" else fail) for val, sev, ok, fail in checks]
+
+    messages: list[tuple[str, str]] = []
+    for value, ok_message, fail_message, fail_level in checks:
+        messages.append(("success", ok_message) if value == "Yes" else (fail_level, fail_message))
+    return messages
 
 
-# --- Section 6: Detail Design ---
-def section6_messages(s: StructuralInputs) -> list[tuple[str, str]]:
-    msgs = []
+def evaluate_detail_design(inputs: StructuralInputs) -> DetailDesignResult:
+    return DetailDesignResult(
+        bracket_arm_min=0.6 * inputs.tripping_bracket_height,
+        bracket_arm_ok=inputs.tripping_bracket_arm >= 0.6 * inputs.tripping_bracket_height,
+        face_plate_brackets_required=inputs.face_plate_width > 400.0,
+        free_flange_support_required=inputs.free_flange_outstand > 180.0,
+    )
 
-    msgs.append(
+
+def section6_messages(inputs: StructuralInputs, result: DetailDesignResult) -> list[tuple[str, str]]:
+    messages: list[tuple[str, str]] = []
+
+    messages.append(
         ("success", "Tripping brackets fitted where required.")
-        if s.tripping_brackets_fitted == "Yes"
+        if inputs.tripping_brackets_fitted == "Yes"
         else ("warning", "Tripping bracket locations should be verified against rule requirements.")
     )
 
-    if s.face_plate_width > 400:
-        msgs.append(("warning", f"bf = {s.face_plate_width:.0f} mm > 400 mm — backing brackets required at tripping bracket locations."))
-
-    if s.free_flange_outstand > 180:
-        msgs.append(("warning", f"Outstand = {s.free_flange_outstand:.0f} mm > 180 mm — connect to tripping bracket or add rib plate."))
-
-    d_min = 0.6 * s.tripping_bracket_height
-    msgs.append(
-        ("success", f"Tripping bracket arm d = {s.tripping_bracket_arm:.3f} m ≥ minimum {d_min:.3f} m ✓")
-        if s.tripping_bracket_arm >= d_min
-        else ("error", f"Tripping bracket arm d = {s.tripping_bracket_arm:.3f} m < minimum {d_min:.3f} m — non-compliant.")
-    )
-
-    for val, label in [
-        (s.openings_in_stiffeners_ok, "Openings/scallops in stiffeners"),
-        (s.openings_in_psm_ok, "Openings in primary supporting members"),
-        (s.openings_in_shell_deck_ok, "Openings in decks/shell/longitudinal bulkheads"),
-    ]:
-        msgs.append(
-            ("success", f"{label} — acceptable.")
-            if val == "Yes"
-            else ("warning", f"{label} — requires review.")
+    if result.face_plate_brackets_required:
+        messages.append(
+            ("warning", f"Face plate width = {inputs.face_plate_width:.0f} mm > 400 mm; backing brackets are required at tripping bracket locations.")
         )
 
-    return msgs
+    if result.free_flange_support_required:
+        messages.append(
+            ("warning", f"Free flange outstand = {inputs.free_flange_outstand:.0f} mm > 180 mm; connect to a tripping bracket or add a rib plate.")
+        )
+
+    messages.append(
+        ("success", f"Tripping bracket arm d = {inputs.tripping_bracket_arm:.3f} m >= minimum {result.bracket_arm_min:.3f} m.")
+        if result.bracket_arm_ok
+        else ("error", f"Tripping bracket arm d = {inputs.tripping_bracket_arm:.3f} m < minimum {result.bracket_arm_min:.3f} m.")
+    )
+
+    for value, label in [
+        (inputs.openings_in_stiffeners_ok, "Openings/scallops in stiffeners"),
+        (inputs.openings_in_psm_ok, "Openings in primary supporting members"),
+        (inputs.openings_in_shell_deck_ok, "Openings in shell/deck/longitudinal bulkheads"),
+    ]:
+        messages.append(
+            ("success", f"{label}: acceptable.")
+            if value == "Yes"
+            else ("warning", f"{label}: review required.")
+        )
+
+    return messages
 
 
-# --- Section 7: Structural Idealization ---
-def section7_results(s: StructuralInputs) -> dict:
-    beff = min(s.attached_plate_b1 + s.attached_plate_b2, s.stiffener_spacing)
-    A_web = s.hw * s.web_thickness
-    A_flange = s.bf * s.flange_thickness
-    A_stiffener = A_web + A_flange
-    A_plate = beff * s.tp
-    A_total = A_stiffener + A_plate
+def section7_results(inputs: StructuralInputs) -> IdealizationResult:
+    beff = min(inputs.attached_plate_b1 + inputs.attached_plate_b2, inputs.stiffener_spacing)
+    a_web = inputs.hw * inputs.web_thickness
+    a_flange = inputs.bf * inputs.flange_thickness
+    a_stiffener = a_web + a_flange
+    a_plate = beff * inputs.tp
+    a_total = a_stiffener + a_plate
 
-    # Neutral axis (from bottom of plate)
-    y_web = s.tp + s.hw / 2
-    y_flange = s.tp + s.hw + s.flange_thickness / 2
-    y_plate = s.tp / 2
+    y_web = inputs.tp + inputs.hw / 2.0
+    y_flange = inputs.tp + inputs.hw + inputs.flange_thickness / 2.0
+    y_plate = inputs.tp / 2.0
 
-    y_na = (A_web * y_web + A_flange * y_flange + A_plate * y_plate) / A_total if A_total > 0 else 0
+    y_na = 0.0
+    if a_total > 0:
+        y_na = (a_web * y_web + a_flange * y_flange + a_plate * y_plate) / a_total
 
-    # Second moment of area about neutral axis
-    I_web = (s.web_thickness * s.hw**3) / 12 + A_web * (y_web - y_na)**2
-    I_flange = (s.bf * s.flange_thickness**3) / 12 + A_flange * (y_flange - y_na)**2
-    I_plate = (beff * s.tp**3) / 12 + A_plate * (y_plate - y_na)**2
-    I_total = I_web + I_flange + I_plate
+    i_web = (inputs.web_thickness * inputs.hw**3) / 12.0 + a_web * (y_web - y_na) ** 2
+    i_flange = (inputs.bf * inputs.flange_thickness**3) / 12.0 + a_flange * (y_flange - y_na) ** 2
+    i_plate = (beff * inputs.tp**3) / 12.0 + a_plate * (y_plate - y_na) ** 2
+    i_total = i_web + i_flange + i_plate
 
-    y_top = s.tp + s.hw + s.flange_thickness - y_na
+    y_top = inputs.tp + inputs.hw + inputs.flange_thickness - y_na
     y_bot = y_na
-    Z_top = I_total / y_top if y_top > 0 else 0
-    Z_bot = I_total / y_bot if y_bot > 0 else 0
+    z_top = i_total / y_top if y_top > 0 else 0.0
+    z_bot = i_total / y_bot if y_bot > 0 else 0.0
 
-    return {
-        "beff_mm": beff,
-        "A_stiffener_mm2": A_stiffener,
-        "A_web_mm2": A_web,
-        "A_flange_mm2": A_flange,
-        "A_plate_mm2": A_plate,
-        "A_total_mm2": A_total,
-        "y_na_mm": y_na,
-        "I_total_mm4": I_total,
-        "Z_top_mm3": Z_top,
-        "Z_bot_mm3": Z_bot,
-    }
-
-
-# --- Render helpers ---
-def render_messages(msgs: list[tuple[str, str]]):
-    for level, msg in msgs:
-        getattr(st, level)(msg)
+    return IdealizationResult(
+        beff_mm=beff,
+        a_stiffener_mm2=a_stiffener,
+        a_web_mm2=a_web,
+        a_flange_mm2=a_flange,
+        a_plate_mm2=a_plate,
+        a_total_mm2=a_total,
+        y_na_mm=y_na,
+        i_total_mm4=i_total,
+        z_top_mm3=z_top,
+        z_bot_mm3=z_bot,
+    )
 
 
-def compliance_badge(passed: bool) -> str:
-    return "✅ PASS" if passed else "❌ FAIL"
+def build_sidebar_inputs() -> tuple[AppInputs, bool]:
+    with st.sidebar:
+        st.header("Ship Inputs")
+
+        with st.form("dnv_ship_inputs"):
+            with st.expander("General", expanded=True):
+                L = st.number_input("Ship length L (m)", min_value=10.0, max_value=400.0, value=120.0)
+                propulsion = st.selectbox("Propulsion type", ["Conventional", "Electric"])
+                damage_stability = st.radio("Damage stability available?", ["No", "Yes"], horizontal=True)
+                engine_room_location = st.selectbox("Engine room location", ENGINE_ROOM_LOCATIONS)
+                service_restriction = st.selectbox("Service restriction notation", SERVICE_RESTRICTIONS)
+
+            with st.expander("Deck configuration"):
+                second_deck = yes_no_radio("Second deck below freeboard deck?", default="No")
+                draught_cond = yes_no_radio("Draught < depth to second deck?", default="No")
+                quarter_deck = yes_no_radio("Raised quarter deck?", default="No")
+                ship_type = st.selectbox("Ship type", ["Cargo Ship", "Other"])
+                freeboard_to_ap = yes_no_radio("Freeboard deck extends to AP?", default="Yes")
+
+            with st.expander("Bow height"):
+                LLL = st.number_input("Freeboard length LLL (m)", min_value=0.0, value=120.0)
+                TLL = st.number_input("Load line draught TLL (m)", min_value=0.0, value=8.0)
+                B = st.number_input("Breadth B (m)", min_value=0.0, value=20.0)
+                displacement = st.number_input("Displacement nabla (m^3)", min_value=0.0, value=15000.0)
+                Awf = st.number_input("Forward waterplane area Awf (m^2)", min_value=0.0, value=800.0)
+                actual_fb = st.number_input("Actual bow height provided (mm)", min_value=0.0, value=3000.0)
+
+            with st.expander("Collision bulkhead"):
+                bulbous_bow = st.radio("Bulbous bow present?", ["No", "Yes"], horizontal=True)
+                xbe = st.number_input("Bulb extension xbe (m)", min_value=0.0, value=5.0)
+                openings_below_freeboard = yes_no_radio("Openings below freeboard deck?", default="No")
+                num_pipes = st.number_input("Pipes through collision bulkhead", min_value=0, max_value=5, value=0)
+                long_superstructure = yes_no_radio("Forward superstructure >= 0.25L?", default="No")
+                aft_space_usage = st.selectbox("Aft space usage", ["Machinery", "Cargo/Passengers"])
+
+            with st.expander("Double bottom and cofferdam"):
+                double_bottom_fitted = yes_no_radio("Double bottom fitted?", default="Yes")
+                fuel_next_to_fw = yes_no_radio("Fuel tank adjacent to fresh water?", default="No")
+
+            with st.expander("Corrosion additions (Ch.3 Sec.3)"):
+                material_family = st.selectbox(
+                    "Material family",
+                    ["Carbon-manganese steel", "Stainless steel", "Stainless clad steel", "Aluminium"],
+                )
+                member_kind = st.selectbox(
+                    "Member type",
+                    ["Compartment boundary", "Internal member", "Stiffener"],
+                )
+                compartment_1 = st.selectbox("Exposure side 1", COMPARTMENT_OPTIONS)
+                compartment_2 = st.selectbox("Exposure side 2 (boundary)", COMPARTMENT_OPTIONS)
+                grab_3x = st.checkbox("Grab(3-X) notation for dry cargo hold lower part")
+                tc_max_override_mm = st.number_input(
+                    "tc cap from Sec.3 [1.2.5] (mm, 0 = off)",
+                    min_value=0.0,
+                    value=0.0,
+                    step=0.1,
+                )
+                t_net_required = st.number_input("Net required thickness t (mm)", min_value=0.0, value=10.0)
+                t_as_built = st.number_input("As-built thickness tas_built (mm)", min_value=0.0, value=12.0)
+                t_vol_add = st.number_input("Voluntary addition tvol (mm)", min_value=0.0, value=0.0)
+
+            with st.expander("Corrosion protection (Ch.3 Sec.4)"):
+                corrosive_tank_or_hold = yes_no_radio("Tank/hold exposed to corrosive environment?", default="No")
+                pspc_vessel = yes_no_radio("Vessel follows PSPC?", default="No")
+                dedicated_seawater_ballast = yes_no_radio("Dedicated seawater ballast tank?", default="No")
+                crude_oil_cargo_tank = yes_no_radio("Cargo oil tank - crude oil carrier?", default="No")
+                narrow_space = yes_no_radio("Narrow space present?", default="No")
+                efficient_protection_product = yes_no_radio("Efficient protective system provided?", default="No")
+
+            with st.expander("Structural arrangement (Ch.3 Sec.5)"):
+                structural_continuity_ok = yes_no_radio("Structural continuity?", default="Yes")
+                longitudinal_stiffeners_aligned = yes_no_radio("Longitudinal stiffeners aligned?", default="Yes")
+                transverse_stiffeners_supported = yes_no_radio("Transverse stiffeners supported?", default="Yes")
+                sheer_strake_continuity = yes_no_radio("Sheer strake continuity OK?", default="Yes")
+                stringer_plate_continuity = yes_no_radio("Stringer plate continuity OK?", default="Yes")
+                deckhouse_connection_good = yes_no_radio("Deckhouse connection OK?", default="Yes")
+
+            with st.expander("Detail design (Ch.3 Sec.6)"):
+                tripping_brackets_fitted = yes_no_radio("Tripping brackets fitted?", default="Yes")
+                face_plate_width = st.number_input("Face plate width bf (mm)", min_value=0.0, value=300.0)
+                free_flange_outstand = st.number_input("Free flange outstand (mm)", min_value=0.0, value=120.0)
+                tripping_bracket_height = st.number_input("Tripping bracket height h (m)", min_value=0.0, value=0.30)
+                tripping_bracket_arm = st.number_input("Tripping bracket arm d (m)", min_value=0.0, value=0.18)
+                openings_in_stiffeners_ok = yes_no_radio("Openings in stiffeners OK?", default="Yes")
+                openings_in_psm_ok = yes_no_radio("Openings in PSM OK?", default="Yes")
+                openings_in_shell_deck_ok = yes_no_radio("Openings in shell/deck/bulkheads OK?", default="Yes")
+
+            with st.expander("Structural idealization (Ch.3 Sec.7)"):
+                effective_span = st.number_input("Effective span l (mm)", min_value=0.0, value=2500.0)
+                stiffener_spacing = st.number_input("Stiffener spacing s (mm)", min_value=0.0, value=700.0)
+                attached_plate_b1 = st.number_input("Attached plating b1 (mm)", min_value=0.0, value=350.0)
+                attached_plate_b2 = st.number_input("Attached plating b2 (mm)", min_value=0.0, value=350.0)
+                web_thickness = st.number_input("Web thickness tw (mm)", min_value=0.0, value=10.0)
+                flange_thickness = st.number_input("Flange thickness tf (mm)", min_value=0.0, value=12.0)
+                hw = st.number_input("Web height hw (mm)", min_value=0.0, value=200.0)
+                bf = st.number_input("Flange width bf (mm)", min_value=0.0, value=90.0)
+                tp = st.number_input("Attached plate thickness tp (mm)", min_value=0.0, value=12.0)
+
+            submitted = st.form_submit_button("Run full calculation", use_container_width=True, type="primary")
+
+    inputs = AppInputs(
+        arrangement=ArrangementInputs(
+            L=L,
+            propulsion=propulsion,
+            damage_stability=damage_stability,
+            second_deck=second_deck,
+            draught_cond=draught_cond,
+            quarter_deck=quarter_deck,
+            ship_type=ship_type,
+            freeboard_to_ap=freeboard_to_ap,
+            engine_room_location=engine_room_location,
+            service_restriction=service_restriction,
+            aft_space_usage=aft_space_usage,
+            double_bottom_fitted=double_bottom_fitted,
+            fuel_next_to_fw=fuel_next_to_fw,
+        ),
+        bow=BowInputs(
+            LLL=LLL,
+            TLL=TLL,
+            B=B,
+            displacement=displacement,
+            Awf=Awf,
+            actual_fb=actual_fb,
+        ),
+        collision=CollisionInputs(
+            bulbous_bow=bulbous_bow,
+            xbe=xbe,
+            openings_below_freeboard=openings_below_freeboard,
+            num_pipes=num_pipes,
+            long_superstructure=long_superstructure,
+        ),
+        corrosion=CorrosionInputs(
+            material_family=material_family,
+            member_kind=member_kind,
+            compartment_1=compartment_1,
+            compartment_2=compartment_2,
+            grab_3x=grab_3x,
+            tc_max_override_mm=tc_max_override_mm,
+            t_net_required=t_net_required,
+            t_as_built=t_as_built,
+            t_vol_add=t_vol_add,
+        ),
+        protection=ProtectionInputs(
+            corrosive_tank_or_hold=corrosive_tank_or_hold,
+            pspc_vessel=pspc_vessel,
+            dedicated_seawater_ballast=dedicated_seawater_ballast,
+            crude_oil_cargo_tank=crude_oil_cargo_tank,
+            narrow_space=narrow_space,
+            efficient_protection_product=efficient_protection_product,
+        ),
+        structural=StructuralInputs(
+            structural_continuity_ok=structural_continuity_ok,
+            longitudinal_stiffeners_aligned=longitudinal_stiffeners_aligned,
+            transverse_stiffeners_supported=transverse_stiffeners_supported,
+            sheer_strake_continuity=sheer_strake_continuity,
+            stringer_plate_continuity=stringer_plate_continuity,
+            deckhouse_connection_good=deckhouse_connection_good,
+            tripping_brackets_fitted=tripping_brackets_fitted,
+            face_plate_width=face_plate_width,
+            free_flange_outstand=free_flange_outstand,
+            tripping_bracket_height=tripping_bracket_height,
+            tripping_bracket_arm=tripping_bracket_arm,
+            openings_in_stiffeners_ok=openings_in_stiffeners_ok,
+            openings_in_psm_ok=openings_in_psm_ok,
+            openings_in_shell_deck_ok=openings_in_shell_deck_ok,
+            effective_span=effective_span,
+            stiffener_spacing=stiffener_spacing,
+            attached_plate_b1=attached_plate_b1,
+            attached_plate_b2=attached_plate_b2,
+            web_thickness=web_thickness,
+            flange_thickness=flange_thickness,
+            hw=hw,
+            bf=bf,
+            tp=tp,
+        ),
+    )
+    return inputs, submitted
 
 
-# =============================================================
-# SIDEBAR — INPUTS
-# =============================================================
-
-with st.sidebar:
-    st.header("⚙️ Ship Inputs")
-
-    with st.expander("📦 General", expanded=True):
-        L    = st.number_input("Ship Length L (m)", 10.0, 400.0, 120.0)
-        propulsion       = st.selectbox("Propulsion Type", ["Conventional", "Electric"])
-        damage_stability = st.radio("Damage Stability Available?", ["No", "Yes"], horizontal=True)
-
-    with st.expander("🏗️ Deck Configuration"):
-        second_deck      = st.radio("Second Deck Below Freeboard?",       ["No", "Yes"], horizontal=True)
-        draught_cond     = st.radio("Draught < Depth to Second Deck?",    ["No", "Yes"], horizontal=True)
-        quarter_deck     = st.radio("Raised Quarter Deck?",               ["No", "Yes"], horizontal=True)
-        ship_type        = st.selectbox("Ship Type", ["Cargo Ship", "Other"])
-        freeboard_to_ap  = st.radio("Freeboard Deck Extends to AP?",      ["Yes", "No"], horizontal=True)
-
-    with st.expander("🌊 Bow Height"):
-        LLL       = st.number_input("Freeboard Length LLL (m)",             value=120.0)
-        TLL       = st.number_input("Load Line Draught TLL (m)",            value=8.0)
-        B         = st.number_input("Breadth B (m)",                        value=20.0)
-        disp      = st.number_input("Displacement ∇ (m³)",                  value=15000.0)
-        Awf       = st.number_input("Forward Waterplane Area Awf (m²)",     value=800.0)
-        actual_Fb = st.number_input("Actual Bow Height Provided (mm)",      value=3000.0)
-
-    with st.expander("🚢 Collision Bulkhead"):
-        bulbous_bow              = st.radio("Bulbous Bow Present?",             ["No", "Yes"], horizontal=True)
-        xbe                      = st.number_input("Bulb Extension xbe (m)",    value=5.0)
-        openings_below_freeboard = st.radio("Openings below freeboard deck?",   ["No", "Yes"], horizontal=True)
-        num_pipes                = st.number_input("Pipes through collision bulkhead", 0, 5, 0)
-        long_superstructure      = st.radio("Forward superstructure ≥ 0.25L?",  ["No", "Yes"], horizontal=True)
-        aft_space_usage          = st.selectbox("Aft Space Usage", ["Machinery", "Cargo/Passengers"])
-
-    with st.expander("🧱 Double Bottom & Cofferdam"):
-        double_bottom_fitted = st.radio("Double Bottom Fitted?",             ["Yes", "No"], horizontal=True)
-        fuel_next_to_fw      = st.radio("Fuel tank adjacent to fresh water?", ["Yes", "No"], horizontal=True)
-
-    with st.expander("🧪 Corrosion Additions (Ch.3 Sec.3)"):
-        material_family  = st.selectbox("Material Family", ["Carbon-manganese steel", "Stainless steel", "Stainless clad steel", "Aluminium"])
-        member_kind      = st.selectbox("Member Type", ["Compartment boundary", "Internal member", "Stiffener"])
-        compartment_1    = st.selectbox("Exposure Side 1", COMPARTMENT_OPTIONS)
-        compartment_2    = st.selectbox("Exposure Side 2 (boundary)", COMPARTMENT_OPTIONS)
-        grab_3x          = st.checkbox("Grab(3-X) notation for dry cargo hold lower part")
-        tc_max_override  = st.number_input("tc cap from Sec.3 [1.2.5] (mm, 0 = off)", min_value=0.0, value=0.0, step=0.1)
-
-        st.markdown("**Net / Gross Thickness**")
-        t_net_required = st.number_input("Net required thickness t (mm)",  min_value=0.0, value=10.0)
-        t_as_built     = st.number_input("As-built thickness tas_built (mm)", min_value=0.0, value=12.0)
-        t_vol_add      = st.number_input("Voluntary addition tvol (mm)",  min_value=0.0, value=0.0)
-
-    with st.expander("🛡️ Corrosion Protection (Ch.3 Sec.4)"):
-        corrosive_tank_or_hold       = st.radio("Tank/hold exposed to corrosive environment?", ["No", "Yes"], horizontal=True)
-        pspc_vessel                  = st.radio("Vessel follows PSPC?",                          ["No", "Yes"], horizontal=True)
-        dedicated_seawater_ballast   = st.radio("Dedicated seawater ballast tank?",              ["No", "Yes"], horizontal=True)
-        crude_oil_cargo_tank         = st.radio("Cargo oil tank — crude oil carrier?",           ["No", "Yes"], horizontal=True)
-        narrow_space                 = st.radio("Narrow space present?",                         ["No", "Yes"], horizontal=True)
-        efficient_protection_product = st.radio("Efficient protective system provided?",         ["No", "Yes"], horizontal=True)
-
-    with st.expander("🧩 Structural Arrangement (Ch.3 Sec.5)"):
-        structural_continuity_ok         = st.radio("Structural continuity?",                ["Yes", "No"], horizontal=True)
-        longitudinal_stiffeners_aligned  = st.radio("Longitudinal stiffeners aligned?",     ["Yes", "No"], horizontal=True)
-        transverse_stiffeners_supported  = st.radio("Transverse stiffeners supported?",     ["Yes", "No"], horizontal=True)
-        sheer_strake_continuity          = st.radio("Sheer strake continuity OK?",          ["Yes", "No"], horizontal=True)
-        stringer_plate_continuity        = st.radio("Stringer plate continuity OK?",        ["Yes", "No"], horizontal=True)
-        deckhouse_connection_good        = st.radio("Deckhouse connection OK?",             ["Yes", "No"], horizontal=True)
-
-    with st.expander("🔧 Detail Design (Ch.3 Sec.6)"):
-        tripping_brackets_fitted  = st.radio("Tripping brackets fitted?",              ["Yes", "No"], horizontal=True)
-        face_plate_width          = st.number_input("Face plate width bf (mm)",        min_value=0.0, value=300.0)
-        free_flange_outstand      = st.number_input("Free flange outstand bf-out (mm)",min_value=0.0, value=120.0)
-        tripping_bracket_height   = st.number_input("Tripping bracket height h (m)",   min_value=0.0, value=0.30)
-        tripping_bracket_arm      = st.number_input("Tripping bracket arm d (m)",      min_value=0.0, value=0.18)
-        openings_in_stiffeners_ok = st.radio("Openings in stiffeners OK?",             ["Yes", "No"], horizontal=True)
-        openings_in_psm_ok        = st.radio("Openings in PSM OK?",                   ["Yes", "No"], horizontal=True)
-        openings_in_shell_deck_ok = st.radio("Openings in shell/deck/bulkheads OK?",  ["Yes", "No"], horizontal=True)
-
-    with st.expander("📐 Structural Idealization (Ch.3 Sec.7)"):
-        effective_span     = st.number_input("Effective span l (mm)",         min_value=0.0, value=2500.0)
-        stiffener_spacing  = st.number_input("Stiffener spacing s (mm)",      min_value=0.0, value=700.0)
-        attached_plate_b1  = st.number_input("Attached plating b1 (mm)",      min_value=0.0, value=350.0)
-        attached_plate_b2  = st.number_input("Attached plating b2 (mm)",      min_value=0.0, value=350.0)
-        web_thickness      = st.number_input("Web thickness tw (mm)",         min_value=0.0, value=10.0)
-        flange_thickness   = st.number_input("Flange thickness tf (mm)",      min_value=0.0, value=12.0)
-        hw_input           = st.number_input("Web height hw (mm)",            min_value=0.0, value=200.0)
-        bf_input           = st.number_input("Flange width bf (mm)",          min_value=0.0, value=90.0)
-        tp_input           = st.number_input("Attached plate thickness tp (mm)", min_value=0.0, value=12.0)
-
-    run = st.button("🚀 Run Full Calculation", use_container_width=True, type="primary")
-
-# =============================================================
-# MAIN AREA — HEADER
-# =============================================================
-
-st.title("⚓ DNV-Based Ship Design Tool")
-st.caption("Integrated Rule-Based Ship Arrangement, Corrosion and Compliance Tool · Preliminary design use only")
-st.divider()
-
-if not run:
-    st.info("Configure inputs in the sidebar, then press **Run Full Calculation**.")
-    st.stop()
-
-# =============================================================
-# ASSEMBLE DATA OBJECTS
-# =============================================================
-
-ship   = ShipInputs(L, propulsion, damage_stability, second_deck, draught_cond, quarter_deck, ship_type, freeboard_to_ap)
-bow    = BowInputs(LLL, TLL, B, disp, Awf, actual_Fb)
-coll   = CollisionInputs(bulbous_bow, xbe, openings_below_freeboard, num_pipes, long_superstructure)
-corr   = CorrosionInputs(material_family, member_kind, compartment_1, compartment_2, grab_3x, tc_max_override, t_net_required, t_as_built, t_vol_add)
-prot   = ProtectionInputs(corrosive_tank_or_hold, pspc_vessel, dedicated_seawater_ballast, crude_oil_cargo_tank, narrow_space, efficient_protection_product)
-struct = StructuralInputs(
-    structural_continuity_ok, longitudinal_stiffeners_aligned,
-    transverse_stiffeners_supported, sheer_strake_continuity,
-    stringer_plate_continuity, deckhouse_connection_good,
-    tripping_brackets_fitted, face_plate_width, free_flange_outstand,
-    tripping_bracket_height, tripping_bracket_arm,
-    openings_in_stiffeners_ok, openings_in_psm_ok, openings_in_shell_deck_ok,
-    effective_span, stiffener_spacing, attached_plate_b1, attached_plate_b2,
-    web_thickness, flange_thickness, hw_input, bf_input, tp_input
-)
-
-# =============================================================
-# RUN CALCULATIONS UP FRONT
-# =============================================================
-
-# Bulkheads
-bulkhead_res = min_bulkheads(ship.L)
-
-# Bow height
-CB  = calculate_cb(bow.LLL, bow.B, bow.TLL, bow.disp)
-Cwf = calculate_cwf(bow.LLL, bow.B, bow.Awf)
-Fb  = calculate_fb(bow.LLL, bow.TLL, CB, Cwf)
-bow_compliant = bow.actual_Fb >= Fb
-
-# Collision bulkhead
-xf = calculate_xf(coll.bulbous_bow, coll.xbe, bow.LLL)
-xc_min, xc_max = collision_limits(bow.LLL, xf)
-
-# Double bottom
-hdb = double_bottom_height(bow.B)
-
-# Corrosion additions
-tc1, tc2, tc_total, tc_detail = total_corrosion_addition(
-    corr.material_family, corr.member_kind,
-    corr.compartment_1, corr.compartment_2,
-    corr.grab_3x, corr.tc_max_override_mm
-)
-tgr     = round_to_nearest_half(corr.t_net_required + tc_total)
-tgr_off = corr.t_as_built - corr.t_vol_add
-toff    = tgr_off - tc_total
-gross_ok = tgr_off >= tgr
-net_ok   = toff >= corr.t_net_required
-
-# Section 7
-ideal = section7_results(struct)
-
-# =============================================================
-# SUMMARY SCORECARD
-# =============================================================
-
-st.header("📊 Compliance Summary")
-
-# Build a quick pass/fail table
-summary_rows = [
-    ("Bulkhead count",          bulkhead_res is not None or L > 225),
-    ("Bow height",              bow_compliant),
-    ("Collision bulkhead — openings", coll.openings_below_freeboard == "No"),
-    ("Collision bulkhead — pipes",    coll.num_pipes <= 1),
-    ("Cofferdam",               fuel_next_to_fw == "No"),
-    ("Gross thickness",         gross_ok),
-    ("Net thickness",           net_ok),
-    ("Structural continuity",   struct.structural_continuity_ok == "Yes"),
-    ("Tripping bracket arm",    struct.tripping_bracket_arm >= 0.6 * struct.tripping_bracket_height),
-]
-
-pass_count = sum(1 for _, v in summary_rows if v)
-fail_count = len(summary_rows) - pass_count
-
-col_a, col_b, col_c = st.columns(3)
-col_a.metric("Total Checks", len(summary_rows))
-col_b.metric("✅ Passing", pass_count)
-col_c.metric("❌ Failing", fail_count, delta=f"-{fail_count}" if fail_count else "0", delta_color="inverse")
-
-summary_df = pd.DataFrame(
-    [{"Check": name, "Result": "✅ PASS" if passed else "❌ FAIL"} for name, passed in summary_rows]
-)
-st.dataframe(summary_df, use_container_width=True, hide_index=True)
-
-st.divider()
-
-# =============================================================
-# DETAILED RESULTS — TABS
-# =============================================================
-
-tabs = st.tabs([
-    "🧱 Arrangement",
-    "🌊 Bow & Collision",
-    "🧪 Corrosion",
-    "🛡️ Protection",
-    "🧩 Structure Sec.5",
-    "🔧 Detail Sec.6",
-    "📐 Idealization Sec.7",
-    "📘 Notes",
-])
-
-# ─── TAB 0: ARRANGEMENT ───────────────────────────────────────
-with tabs[0]:
-    st.subheader("🧱 Bulkhead Arrangement")
-
-    if bulkhead_res:
-        c1, c2 = st.columns(2)
-        c1.metric("Min. Bulkheads — Aft region",       bulkhead_res["aft"])
-        c2.metric("Min. Bulkheads — Elsewhere",         bulkhead_res["elsewhere"])
-        st.success("Bulkhead table lookup successful.")
+def compute_results(inputs: AppInputs) -> AppResults:
+    bulkhead_lookup = min_bulkheads_lookup(inputs.arrangement.L)
+    if inputs.arrangement.damage_stability == "Yes":
+        bulkheads = BulkheadScreening(
+            applicable=False,
+            special_consideration=False,
+            min_aft_region=None,
+            min_elsewhere=None,
+            note="Damage stability is available; the minimum-bulkhead lookup table is not the governing screening check.",
+        )
+    elif bulkhead_lookup is None:
+        bulkheads = BulkheadScreening(
+            applicable=True,
+            special_consideration=True,
+            min_aft_region=None,
+            min_elsewhere=None,
+            note="L > 225 m; bulkhead number requires special consideration.",
+        )
     else:
-        st.warning("L > 225 m — special consideration required per rule table.")
+        bulkheads = BulkheadScreening(
+            applicable=True,
+            special_consideration=False,
+            min_aft_region=bulkhead_lookup[0],
+            min_elsewhere=bulkhead_lookup[1],
+            note="Minimum transverse watertight bulkhead screening values from the Chapter 2 table.",
+        )
+
+    cb = calculate_cb(inputs.bow.LLL, inputs.bow.B, inputs.bow.TLL, inputs.bow.displacement)
+    cwf = calculate_cwf(inputs.bow.LLL, inputs.bow.B, inputs.bow.Awf)
+    required_fb = calculate_fb(inputs.bow.LLL, inputs.bow.TLL, cb, cwf)
+    bow = BowHeightResult(
+        cb=cb,
+        cwf=cwf,
+        required_fb=required_fb,
+        actual_fb=inputs.bow.actual_fb,
+        margin=inputs.bow.actual_fb - required_fb,
+        compliant=inputs.bow.actual_fb >= required_fb,
+    )
+
+    xf = calculate_xf(inputs.collision.bulbous_bow, inputs.collision.xbe, inputs.bow.LLL)
+    xc_min, xc_max = collision_limits(inputs.bow.LLL, xf)
+    collision = CollisionResult(
+        xf=xf,
+        xc_min=xc_min,
+        xc_max=xc_max,
+        openings_ok=inputs.collision.openings_below_freeboard == "No",
+        pipes_ok=inputs.collision.num_pipes <= 1,
+        single_pipe_requires_valve=inputs.collision.num_pipes == 1,
+        superstructure_extension_required=inputs.collision.long_superstructure == "Yes",
+    )
+
+    tc1, tc2, tc_total, detail = total_corrosion_addition(inputs.corrosion)
+    gross_required = round_to_nearest_half(inputs.corrosion.t_net_required + tc_total)
+    gross_offered = inputs.corrosion.t_as_built - inputs.corrosion.t_vol_add
+    net_offered = gross_offered - tc_total
+    gross_margin = gross_offered - gross_required
+    net_margin = net_offered - inputs.corrosion.t_net_required
+    corrosion = CorrosionResult(
+        tc1=tc1,
+        tc2=tc2,
+        tc_total=tc_total,
+        detail=detail,
+        gross_required=gross_required,
+        gross_offered=gross_offered,
+        net_offered=net_offered,
+        gross_margin=gross_margin,
+        net_margin=net_margin,
+        gross_ok=gross_margin >= 0,
+        net_ok=net_margin >= 0,
+    )
+
+    detail_result = evaluate_detail_design(inputs.structural)
+    idealization = section7_results(inputs.structural)
+
+    return AppResults(
+        bulkheads=bulkheads,
+        bow=bow,
+        collision=collision,
+        corrosion=corrosion,
+        detail=detail_result,
+        idealization=idealization,
+        double_bottom_height_mm=double_bottom_height(inputs.bow.B),
+    )
+
+
+def build_summary_rows(inputs: AppInputs, results: AppResults) -> list[tuple[str, bool]]:
+    return [
+        ("Bow height", results.bow.compliant),
+        ("Collision bulkhead openings", results.collision.openings_ok),
+        ("Collision bulkhead pipe count", results.collision.pipes_ok),
+        ("Gross thickness", results.corrosion.gross_ok),
+        ("Net thickness", results.corrosion.net_ok),
+        ("Structural continuity", inputs.structural.structural_continuity_ok == "Yes"),
+        ("Longitudinal stiffeners aligned", inputs.structural.longitudinal_stiffeners_aligned == "Yes"),
+        ("Tripping bracket arm", results.detail.bracket_arm_ok),
+    ]
+
+
+def render_summary(results: AppResults, summary_rows: list[tuple[str, bool]]) -> None:
+    st.header("Automated Check Summary")
+
+    pass_count = sum(1 for _, passed in summary_rows if passed)
+    fail_count = len(summary_rows) - pass_count
+
+    col1, col2, col3 = st.columns(3)
+    col1.metric("Total checks", len(summary_rows))
+    col2.metric("Passing", pass_count)
+    col3.metric("Failing", fail_count)
+
+    summary_df = pd.DataFrame(
+        [{"Check": name, "Result": "PASS" if passed else "FAIL"} for name, passed in summary_rows]
+    )
+    st.dataframe(summary_df, use_container_width=True, hide_index=True)
+    st.caption("Only direct pass/fail checks with explicit user inputs are included here.")
+
+
+def render_arrangement_tab(inputs: AppInputs, results: AppResults) -> None:
+    st.subheader("Bulkhead arrangement")
+
+    if results.bulkheads.special_consideration:
+        st.warning(results.bulkheads.note)
+    elif results.bulkheads.applicable:
+        col1, col2 = st.columns(2)
+        col1.metric("Min. bulkheads - aft region", results.bulkheads.min_aft_region)
+        col2.metric("Min. bulkheads - elsewhere", results.bulkheads.min_elsewhere)
+        st.info(results.bulkheads.note)
+    else:
+        st.info(results.bulkheads.note)
+
+    if inputs.arrangement.propulsion == "Electric":
+        st.info("Electric propulsion selected: the generator room and engine room should be enclosed by watertight bulkheads.")
+
+    if inputs.arrangement.second_deck == "Yes" and inputs.arrangement.draught_cond == "Yes":
+        st.info(
+            "Second deck exception selected: bulkheads other than the collision bulkhead may terminate at the second deck if the related engine casing and deck are arranged as watertight."
+        )
+
+    if inputs.arrangement.quarter_deck == "Yes":
+        st.info("Raised quarter deck selected: watertight bulkheads in the quarter deck region should extend to that deck.")
+        if inputs.arrangement.ship_type == "Cargo Ship" and inputs.arrangement.freeboard_to_ap == "No":
+            st.info(
+                "Cargo ship with raised quarter deck and freeboard deck not extending to AP: the aft peak bulkhead may terminate at a lower watertight deck only with the stated watertight rudder-stock compartment arrangement."
+            )
 
     st.divider()
-    st.subheader("🛢️ Cofferdam")
-
-    if fuel_next_to_fw == "Yes":
-        st.error("Cofferdam REQUIRED between fuel oil and fresh water tanks.")
+    st.subheader("Cofferdam")
+    if inputs.arrangement.fuel_next_to_fw == "Yes":
+        st.warning("Fuel tank adjacent to fresh water: a cofferdam is required between the two spaces.")
     else:
-        st.success("No cofferdam required — fuel and fresh water tanks not adjacent.")
+        st.success("No fuel/fresh-water adjacency selected; no cofferdam trigger from this input.")
 
     st.divider()
-    st.subheader("🧱 Double Bottom")
-
-    if double_bottom_fitted == "Yes":
-        st.metric("Minimum Height (mm)", f"{hdb:.0f}")
+    st.subheader("Double bottom")
+    st.metric("Minimum double-bottom height hDB (mm)", f"{results.double_bottom_height_mm:.0f}")
+    if inputs.arrangement.double_bottom_fitted == "Yes":
         st.success("Double bottom provided.")
     else:
-        st.warning("Double bottom not fitted — damage stability justification must be provided.")
+        st.warning("Double bottom not fitted: bottom-damage justification is required.")
 
     st.divider()
-    st.subheader("🚢 Compartment Rules")
-
-    rules = [
-        "No fuel oil in compartments forward of the collision bulkhead.",
-        "Stern tube must be enclosed in a watertight space.",
-        "Shaft tunnel required when engine room is located amidships.",
-        "Steering gear compartment must be separated and remain accessible.",
-    ]
-    for r in rules:
-        st.write(f"• {r}")
-
-    st.divider()
-    st.subheader("🚪 Access Requirements")
-
-    access = [
-        "All tanks must be accessible for inspection.",
-        "Double bottom must be fitted with manholes.",
-        "Closed spaces must be accessible or specially approved.",
-    ]
-    for a in access:
-        st.write(f"• {a}")
-
-
-# ─── TAB 1: BOW & COLLISION ───────────────────────────────────
-with tabs[1]:
-    st.subheader("🌊 Minimum Bow Height")
-
-    c1, c2, c3 = st.columns(3)
-    c1.metric("CB (block coefficient)", f"{CB:.4f}")
-    c2.metric("Cwf (waterplane coeff.)", f"{Cwf:.4f}")
-    c3.metric("Required Fb (mm)", f"{Fb:.1f}")
-
-    c4, c5 = st.columns(2)
-    c4.metric("Actual Bow Height (mm)", f"{bow.actual_Fb:.1f}")
-    c5.metric("Margin (mm)", f"{bow.actual_Fb - Fb:+.1f}")
-
-    if bow_compliant:
-        st.success(f"Bow height compliant — actual {bow.actual_Fb:.0f} mm ≥ required {Fb:.0f} mm.")
+    st.subheader("Shaft tunnel and aft/steering spaces")
+    if inputs.arrangement.engine_room_location == "Amidships":
+        if inputs.arrangement.service_restriction == "Unrestricted":
+            st.warning("Engine room amidships: a watertight shaft tunnel is required.")
+        else:
+            st.info(
+                f"Engine room amidships with service restriction {inputs.arrangement.service_restriction}: shaft tunnel omission may be possible only if the shafting is otherwise effectively protected."
+            )
     else:
-        st.error(f"Bow height NON-COMPLIANT — shortfall of {Fb - bow.actual_Fb:.0f} mm.")
+        st.info("Engine room not set to amidships; the Chapter 2 shaft tunnel trigger is not active from this input set.")
+
+    if inputs.arrangement.aft_space_usage == "Machinery":
+        st.info("Aft machinery space selected: the aft peak bulkhead termination allowance above deepest draught may be relevant.")
+    else:
+        st.info("Aft cargo/passenger use selected: verify that aft peak arrangements remain fully compliant for the chosen use.")
+
+    st.write("- Steering gear compartment should remain readily accessible and separated from machinery spaces.")
+    st.write("- Stern tube should be enclosed in a watertight space or accepted equivalent arrangement.")
+    st.write("- Spaces forward of the collision bulkhead should not be used for fuel oil or other flammable products.")
 
     st.divider()
-    st.subheader("🚢 Collision Bulkhead Position")
+    st.subheader("Access requirements")
+    st.write("- All tanks should be accessible for inspection.")
+    st.write("- Double-bottom spaces should have manholes in inner bottom, floors and longitudinal girders.")
+    st.write("- Closed spaces should be accessible for inspection, or otherwise specially considered.")
 
-    cb1, cb2 = st.columns(2)
-    cb1.metric("xc_min (m)", f"{xc_min:.3f}")
-    cb2.metric("xc_max (m)", f"{xc_max:.3f}")
 
-    if xf > 0:
-        st.info(f"Bulbous bow credit xf = {xf:.3f} m applied.")
+def render_bow_collision_tab(inputs: AppInputs, results: AppResults) -> None:
+    st.subheader("Minimum bow height")
 
-    if coll.openings_below_freeboard == "Yes":
-        st.error("Openings below freeboard deck — NOT permitted through or below the collision bulkhead.")
+    col1, col2, col3 = st.columns(3)
+    col1.metric("CB", f"{results.bow.cb:.4f}")
+    col2.metric("Cwf", f"{results.bow.cwf:.4f}")
+    col3.metric("Required Fb (mm)", f"{results.bow.required_fb:.1f}")
+
+    col4, col5 = st.columns(2)
+    col4.metric("Actual Fb (mm)", f"{results.bow.actual_fb:.1f}")
+    col5.metric("Margin (mm)", f"{results.bow.margin:+.1f}")
+
+    if results.bow.compliant:
+        st.success(f"Bow height compliant: actual {results.bow.actual_fb:.0f} mm >= required {results.bow.required_fb:.0f} mm.")
     else:
-        st.success("No openings below freeboard deck.")
+        st.error(f"Bow height not compliant: shortfall {abs(results.bow.margin):.0f} mm.")
 
-    if coll.num_pipes > 1:
-        st.error(f"{coll.num_pipes} pipes through collision bulkhead — maximum 1 pipe permitted.")
-    elif coll.num_pipes == 1:
-        st.warning("1 pipe through collision bulkhead — must be fitted with a screw-down valve operable from above the freeboard deck.")
-    else:
-        st.success("No pipes through collision bulkhead.")
-
-    if coll.long_superstructure == "Yes":
-        st.info("Forward superstructure ≥ 0.25L — collision bulkhead must extend weathertight to the next deck.")
+    st.info(
+        "This bow-height implementation uses the standard DNV/Load Line style expression derived from Chapter 2 screening and should be verified against the governing rule edition before final use."
+    )
 
     st.divider()
-    st.subheader("⚓ Aft Peak Bulkhead")
+    st.subheader("Collision bulkhead")
 
-    st.write("• Must enclose the stern tube and rudder trunk.")
-    if aft_space_usage == "Machinery":
-        st.info("Aft machinery space — termination above the deepest draught is permitted.")
+    c1, c2 = st.columns(2)
+    c1.metric("xc_min (m)", f"{results.collision.xc_min:.3f}")
+    c2.metric("xc_max (m)", f"{results.collision.xc_max:.3f}")
+
+    if results.collision.xf > 0:
+        st.info(f"Bulbous bow adjustment xf = {results.collision.xf:.3f} m applied.")
+
+    if results.collision.openings_ok:
+        st.success("No openings below the freeboard deck.")
     else:
-        st.write("• Aft space used for cargo/passengers — verify full height enclosure.")
+        st.error("Openings below the freeboard deck are not permitted in this screening check.")
+
+    if not results.collision.pipes_ok:
+        st.error(f"{inputs.collision.num_pipes} pipes through collision bulkhead: maximum allowed is 1.")
+    elif results.collision.single_pipe_requires_valve:
+        st.warning("One pipe selected: provide the required screw-down valve operable from above the freeboard deck.")
+    else:
+        st.success("No pipes through the collision bulkhead.")
+
+    if results.collision.superstructure_extension_required:
+        st.info("Forward superstructure >= 0.25L selected: collision bulkhead should extend weathertight to the next deck above the bulkhead deck.")
 
 
-# ─── TAB 2: CORROSION ADDITIONS ───────────────────────────────
-with tabs[2]:
-    st.subheader("🧪 Corrosion Additions (Ch.3 Sec.3)")
+def render_corrosion_tab(inputs: AppInputs, results: AppResults) -> None:
+    st.subheader("Corrosion additions (Ch.3 Sec.3)")
 
-    d1, d2, d3, d4 = st.columns(4)
-    d1.metric("tc₁ (mm)", f"{tc1:.2f}")
-    d2.metric("tc₂ (mm)", f"{tc2:.2f}")
-    d3.metric("t_res (mm)", f"{TRES:.2f}")
-    d4.metric("Total tc (mm)", f"{tc_total:.2f}")
+    col1, col2, col3, col4 = st.columns(4)
+    col1.metric("tc1 (mm)", f"{results.corrosion.tc1:.2f}")
+    col2.metric("tc2 (mm)", f"{results.corrosion.tc2:.2f}")
+    col3.metric("t_res (mm)", f"{TRES:.2f}")
+    col4.metric("tc_total (mm)", f"{results.corrosion.tc_total:.2f}")
 
-    st.info(f"Rule logic: {tc_detail}")
+    st.info(f"Rule logic: {results.corrosion.detail}")
 
-    if corr.member_kind == "Stiffener":
-        st.write("• Stiffener tc follows the location of connection to attached plating.")
-        st.write("• Where more than one corrosion value applies, use the largest.")
+    if inputs.corrosion.member_kind == "Stiffener":
+        st.write("- Stiffener tc follows the location of connection to attached plating.")
+        st.write("- Where more than one corrosion value applies, the largest value should be used.")
 
     st.divider()
-    st.subheader("📏 Net / Gross Thickness Check")
+    st.subheader("Net / gross thickness screening")
 
     g1, g2, g3, g4 = st.columns(4)
-    g1.metric("Net required t (mm)",      f"{corr.t_net_required:.2f}")
-    g2.metric("Gross required tgr (mm)",  f"{tgr:.1f}")
-    g3.metric("Gross offered tgr_off (mm)", f"{tgr_off:.1f}")
-    g4.metric("Net offered toff (mm)",    f"{toff:.1f}")
+    g1.metric("Net required t (mm)", f"{inputs.corrosion.t_net_required:.2f}")
+    g2.metric("Gross required tgr (mm)", f"{results.corrosion.gross_required:.1f}")
+    g3.metric("Gross offered tgr_off (mm)", f"{results.corrosion.gross_offered:.1f}")
+    g4.metric("Net offered toff (mm)", f"{results.corrosion.net_offered:.1f}")
 
-    # Visual margin bars
-    gross_margin = tgr_off - tgr
-    net_margin   = toff - corr.t_net_required
+    c1, c2 = st.columns(2)
+    if results.corrosion.gross_ok:
+        c1.success(f"Gross thickness OK: margin +{results.corrosion.gross_margin:.2f} mm")
+    else:
+        c1.error(f"Gross thickness fails: margin {results.corrosion.gross_margin:.2f} mm")
 
-    r1, r2 = st.columns(2)
-    with r1:
-        if gross_ok:
-            st.success(f"Gross thickness OK — margin: +{gross_margin:.2f} mm")
-        else:
-            st.error(f"Gross thickness FAILS — shortfall: {gross_margin:.2f} mm")
-    with r2:
-        if net_ok:
-            st.success(f"Net thickness OK — margin: +{net_margin:.2f} mm")
-        else:
-            st.error(f"Net thickness FAILS — shortfall: {net_margin:.2f} mm")
+    if results.corrosion.net_ok:
+        c2.success(f"Net thickness OK: margin +{results.corrosion.net_margin:.2f} mm")
+    else:
+        c2.error(f"Net thickness fails: margin {results.corrosion.net_margin:.2f} mm")
 
-    # Breakdown table
-    st.markdown("**Thickness Breakdown**")
-    breakdown = pd.DataFrame({
-        "Parameter":  ["t_net required", "tc total", "Gross required (tgr)", "As-built (t_as-built)", "Voluntary addition (tvol)", "Gross offered (tgr_off)", "Net offered (toff)"],
-        "Value (mm)": [corr.t_net_required, tc_total, tgr, corr.t_as_built, corr.t_vol_add, tgr_off, toff],
-    })
+    breakdown = pd.DataFrame(
+        {
+            "Parameter": [
+                "t_net required",
+                "tc total",
+                "Gross required (tgr)",
+                "As-built (tas_built)",
+                "Voluntary addition (tvol)",
+                "Gross offered (tgr_off)",
+                "Net offered (toff)",
+            ],
+            "Value (mm)": [
+                inputs.corrosion.t_net_required,
+                results.corrosion.tc_total,
+                results.corrosion.gross_required,
+                inputs.corrosion.t_as_built,
+                inputs.corrosion.t_vol_add,
+                results.corrosion.gross_offered,
+                results.corrosion.net_offered,
+            ],
+        }
+    )
     st.dataframe(breakdown, use_container_width=True, hide_index=True)
 
 
-# ─── TAB 3: CORROSION PROTECTION ──────────────────────────────
-with tabs[3]:
-    st.subheader("🛡️ Corrosion Protection (Ch.3 Sec.4)")
-    render_messages(corrosion_protection_messages(prot))
+def render_protection_tab(inputs: AppInputs) -> None:
+    st.subheader("Corrosion protection (Ch.3 Sec.4)")
+    render_messages(corrosion_protection_messages(inputs.protection))
 
 
-# ─── TAB 4: STRUCTURAL ARRANGEMENT ────────────────────────────
-with tabs[4]:
-    st.subheader("🧩 Structural Arrangement (Ch.3 Sec.5)")
-    render_messages(section5_messages(struct))
-    st.caption("Rule-screening module for continuity, stiffener arrangement and major structural connections.")
+def render_section5_tab(inputs: AppInputs) -> None:
+    st.subheader("Structural arrangement (Ch.3 Sec.5)")
+    render_messages(section5_messages(inputs.structural))
+    st.caption("Continuity, stiffener arrangement and major structural connection screening.")
 
 
-# ─── TAB 5: DETAIL DESIGN ─────────────────────────────────────
-with tabs[5]:
-    st.subheader("🔧 Detail Design (Ch.3 Sec.6)")
-    render_messages(section6_messages(struct))
+def render_section6_tab(inputs: AppInputs, results: AppResults) -> None:
+    st.subheader("Detail design (Ch.3 Sec.6)")
+    render_messages(section6_messages(inputs.structural, results.detail))
     st.caption("Simplified checks for tripping brackets and openings.")
 
 
-# ─── TAB 6: STRUCTURAL IDEALIZATION ───────────────────────────
-with tabs[6]:
-    st.subheader("📐 Structural Idealization (Ch.3 Sec.7)")
+def render_section7_tab(results: AppResults) -> None:
+    st.subheader("Structural idealization (Ch.3 Sec.7)")
 
-    c1, c2, c3, c4 = st.columns(4)
-    c1.metric("Effective breadth beff (mm)",  f"{ideal['beff_mm']:.1f}")
-    c2.metric("A_stiffener (mm²)",            f"{ideal['A_stiffener_mm2']:.1f}")
-    c3.metric("A_plate (mm²)",                f"{ideal['A_plate_mm2']:.1f}")
-    c4.metric("A_total (mm²)",                f"{ideal['A_total_mm2']:.1f}")
+    row1 = st.columns(4)
+    row1[0].metric("beff (mm)", f"{results.idealization.beff_mm:.1f}")
+    row1[1].metric("A_stiffener (mm^2)", f"{results.idealization.a_stiffener_mm2:.1f}")
+    row1[2].metric("A_plate (mm^2)", f"{results.idealization.a_plate_mm2:.1f}")
+    row1[3].metric("A_total (mm^2)", f"{results.idealization.a_total_mm2:.1f}")
 
     st.divider()
 
-    e1, e2, e3, e4 = st.columns(4)
-    e1.metric("A_web (mm²)",              f"{ideal['A_web_mm2']:.1f}")
-    e2.metric("A_flange (mm²)",           f"{ideal['A_flange_mm2']:.1f}")
-    e3.metric("Neutral axis y_NA (mm)",   f"{ideal['y_na_mm']:.2f}")
-    e4.metric("I_total (mm⁴)",            f"{ideal['I_total_mm4']:.1f}")
+    row2 = st.columns(4)
+    row2[0].metric("A_web (mm^2)", f"{results.idealization.a_web_mm2:.1f}")
+    row2[1].metric("A_flange (mm^2)", f"{results.idealization.a_flange_mm2:.1f}")
+    row2[2].metric("Neutral axis y_NA (mm)", f"{results.idealization.y_na_mm:.2f}")
+    row2[3].metric("I_total (mm^4)", f"{results.idealization.i_total_mm4:.1f}")
 
-    s1, s2 = st.columns(2)
-    s1.metric("Z_top (mm³)", f"{ideal['Z_top_mm3']:.1f}")
-    s2.metric("Z_bot (mm³)", f"{ideal['Z_bot_mm3']:.1f}")
+    row3 = st.columns(2)
+    row3[0].metric("Z_top (mm^3)", f"{results.idealization.z_top_mm3:.1f}")
+    row3[1].metric("Z_bot (mm^3)", f"{results.idealization.z_bot_mm3:.1f}")
 
     st.caption(
-        "Neutral axis measured from bottom of attached plate. "
-        "Z_top = section modulus to top fibre (flange), Z_bot = to bottom fibre (plate underside). "
-        "Effective breadth uses simple min(b1+b2, s) rule — shear lag not applied."
+        "Neutral axis is measured from the bottom of the attached plate. Effective breadth uses min(b1 + b2, s). Shear lag and weld geometry are not included."
     )
 
-    # Cross-section summary table
-    st.markdown("**Section Property Summary**")
-    props = pd.DataFrame({
-        "Property": list(ideal.keys()),
-        "Value": [f"{v:.2f}" for v in ideal.values()],
-    })
-    st.dataframe(props, use_container_width=True, hide_index=True)
+    properties = pd.DataFrame(
+        {
+            "Property": [
+                "beff_mm",
+                "a_stiffener_mm2",
+                "a_web_mm2",
+                "a_flange_mm2",
+                "a_plate_mm2",
+                "a_total_mm2",
+                "y_na_mm",
+                "i_total_mm4",
+                "z_top_mm3",
+                "z_bot_mm3",
+            ],
+            "Value": [
+                f"{results.idealization.beff_mm:.2f}",
+                f"{results.idealization.a_stiffener_mm2:.2f}",
+                f"{results.idealization.a_web_mm2:.2f}",
+                f"{results.idealization.a_flange_mm2:.2f}",
+                f"{results.idealization.a_plate_mm2:.2f}",
+                f"{results.idealization.a_total_mm2:.2f}",
+                f"{results.idealization.y_na_mm:.2f}",
+                f"{results.idealization.i_total_mm4:.2f}",
+                f"{results.idealization.z_top_mm3:.2f}",
+                f"{results.idealization.z_bot_mm3:.2f}",
+            ],
+        }
+    )
+    st.dataframe(properties, use_container_width=True, hide_index=True)
 
 
-# ─── TAB 7: NOTES ─────────────────────────────────────────────
-with tabs[7]:
-    st.subheader("📘 Scope & Limitations")
+def render_notes_tab() -> None:
+    st.subheader("Scope and limitations")
+    st.markdown(
+        """
+| Chapter | Section | Topic |
+| --- | --- | --- |
+| Ch.2 | - | Arrangement and subdivision |
+| Ch.3 | Sec.3 | Corrosion additions |
+| Ch.3 | Sec.4 | Corrosion protection |
+| Ch.3 | Sec.5 | Structural arrangement |
+| Ch.3 | Sec.6 | Detail design |
+| Ch.3 | Sec.7 | Structural idealization |
 
-    st.markdown("""
-    **Scope**
+Known simplifications:
 
-    | Chapter | Section | Topic |
-    |---------|---------|-------|
-    | Ch.2 | — | Arrangement & subdivision |
-    | Ch.3 | Sec.3 | Corrosion additions |
-    | Ch.3 | Sec.4 | Corrosion protection |
-    | Ch.3 | Sec.5 | Structural arrangement |
-    | Ch.3 | Sec.6 | Detail design |
-    | Ch.3 | Sec.7 | Structural idealization |
+- Bow height uses the standard DNV/Load Line style screening expression; no slamming assessment is included.
+- Effective breadth uses `beff = min(b1 + b2, s)`; shear lag is not modelled.
+- Section properties assume simple rectangular web/flange geometry; welds and scallops are not modelled.
+- Tripping bracket arm screening uses `d >= 0.6h`.
+- Corrosion addition logic covers the main material/member/compartment cases, including Grab(3-X).
+- No direct load, buckling, fatigue or ultimate strength checks are performed.
 
-    **Known Simplifications**
-    - Bow height formula uses DNV simplified expression; slamming loads not computed.
-    - Effective breadth uses simple $$b_{eff} = \\min(b_1+b_2,\\,s)$$ — shear lag effects not modelled.
-    - Section modulus assumes uniform rectangular web and flange; no fillet welds modelled.
-    - Tripping bracket arm check uses rule-of-thumb $$d \\geq 0.6h$$.
-    - Corrosion addition rule logic covers the main material/member/compartment matrix; specialist notations beyond Grab(3-X) are not included.
-    - No wave loads, fatigue, or buckling checks are performed.
+Intended use:
 
-    **Intended Use**
+Preliminary design screening and rule orientation only. Results should be verified against the governing DNV rule edition before submission or fabrication.
+"""
+    )
 
-    Preliminary design screening and rule orientation only. Results must be verified
-    against the current DNV Rules for Ships before submission or fabrication.
-    """)
 
-# =============================================================
-# FOOTER
-# =============================================================
+def main() -> None:
+    inputs, submitted = build_sidebar_inputs()
+    if submitted:
+        st.session_state["run_calculation"] = True
 
-st.divider()
-st.caption("DNV-based ship design and compliance tool · Advanced prototype · For preliminary design use only")
+    st.title("DNV-Based Ship Design Tool")
+    st.caption("Integrated rule-based ship arrangement, corrosion and compliance tool for preliminary design.")
+    st.divider()
+
+    if not st.session_state.get("run_calculation", False):
+        st.info("Configure the inputs in the sidebar, then press Run full calculation.")
+        st.stop()
+
+    results = compute_results(inputs)
+    summary_rows = build_summary_rows(inputs, results)
+
+    render_summary(results, summary_rows)
+    st.divider()
+
+    tabs = st.tabs(
+        [
+            "Arrangement",
+            "Bow and collision",
+            "Corrosion",
+            "Protection",
+            "Structure Sec.5",
+            "Detail Sec.6",
+            "Idealization Sec.7",
+            "Notes",
+        ]
+    )
+
+    with tabs[0]:
+        render_arrangement_tab(inputs, results)
+    with tabs[1]:
+        render_bow_collision_tab(inputs, results)
+    with tabs[2]:
+        render_corrosion_tab(inputs, results)
+    with tabs[3]:
+        render_protection_tab(inputs)
+    with tabs[4]:
+        render_section5_tab(inputs)
+    with tabs[5]:
+        render_section6_tab(inputs, results)
+    with tabs[6]:
+        render_section7_tab(results)
+    with tabs[7]:
+        render_notes_tab()
+
+    st.divider()
+    st.caption("DNV-based ship design and compliance tool - advanced prototype - for preliminary design use only.")
+
+
+main()
